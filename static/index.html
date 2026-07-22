@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BI Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .chat-scroll { scroll-behavior: smooth; }
+        .artifact-card { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .loading-dots::after { content: ''; animation: dots 1.5s steps(5, end) infinite; }
+        @keyframes dots { 0%, 20% { content: '.'; } 40% { content: '..'; } 60% { content: '...'; } 80%, 100% { content: ''; } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 h-screen flex flex-col overflow-hidden">
+
+    <!-- Header -->
+    <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between flex-shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm">BI</div>
+            <h1 class="text-lg font-semibold text-slate-800">BI Agent</h1>
+        </div>
+        <div class="flex items-center gap-2 text-sm">
+            <span id="healthDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span id="healthText" class="text-slate-500">Connecting...</span>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+        <!-- Sidebar -->
+        <aside class="w-80 bg-white border-r border-slate-200 flex flex-col flex-shrink-0">
+            <div class="p-4 border-b border-slate-100">
+                <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Datasets</h2>
+                <label class="block w-full cursor-pointer">
+                    <div class="border-2 border-dashed border-slate-300 rounded-lg p-4 text-center hover:border-blue-400 hover:bg-blue-50 transition-colors">
+                        <svg class="mx-auto h-8 w-8 text-slate-400 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <span class="text-sm text-slate-600 font-medium">Upload CSV or XLSX</span>
+                    </div>
+                    <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" class="hidden">
+                </label>
+            </div>
+            <div id="fileList" class="flex-1 overflow-y-auto p-4 space-y-2">
+                <p class="text-sm text-slate-400 italic">No files uploaded yet.</p>
+            </div>
+        </aside>
+
+        <!-- Chat -->
+        <main class="flex-1 flex flex-col min-w-0">
+            <div id="chatMessages" class="flex-1 overflow-y-auto chat-scroll p-6 space-y-4">
+                <div class="flex justify-start">
+                    <div class="bg-white border border-slate-200 rounded-2xl rounded-tl-none px-4 py-3 max-w-2xl shadow-sm">
+                        <p class="text-slate-700 text-sm">Hello! Upload a dataset and ask me anything about it. I can analyze data, create tables, and draw charts.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input -->
+            <div class="border-t border-slate-200 bg-white p-4">
+                <form id="chatForm" class="max-w-4xl mx-auto flex gap-3">
+                    <input type="text" id="chatInput" placeholder="Ask a question about your data..."
+                        class="flex-1 rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        autocomplete="off">
+                    <button type="submit" id="sendBtn"
+                        class="bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        Send
+                    </button>
+                </form>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const apiBase = window.location.origin;
+        let charts = {};
+
+        // Health check
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${apiBase}/health`);
+                const data = await res.json();
+                const dot = document.getElementById('healthDot');
+                const text = document.getElementById('healthText');
+                if (data.mcp_connected) {
+                    dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+                    text.textContent = 'Connected';
+                    text.className = 'text-emerald-600 text-sm font-medium';
+                } else {
+                    dot.className = 'w-2 h-2 rounded-full bg-amber-500';
+                    text.textContent = 'MCP offline';
+                    text.className = 'text-amber-600 text-sm font-medium';
+                }
+            } catch {
+                document.getElementById('healthDot').className = 'w-2 h-2 rounded-full bg-red-500';
+                document.getElementById('healthText').textContent = 'Offline';
+            }
+        }
+        checkHealth();
+        setInterval(checkHealth, 30000);
+
+        // File list
+        async function loadFiles() {
+            const res = await fetch(`${apiBase}/files`);
+            const data = await res.json();
+            const list = document.getElementById('fileList');
+            if (!data.files.length) {
+                list.innerHTML = '<p class="text-sm text-slate-400 italic">No files uploaded yet.</p>';
+                return;
+            }
+            list.innerHTML = data.files.map(f => `
+                <div class="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                    <div class="min-w-0">
+                        <p class="text-sm font-medium text-slate-700 truncate">${escapeHtml(f.name)}</p>
+                        <p class="text-xs text-slate-500">${formatBytes(f.size)}</p>
+                    </div>
+                    <button onclick="deleteFile('${escapeHtml(f.name)}')" class="text-slate-400 hover:text-red-500 ml-2 flex-shrink-0" title="Delete">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function uploadFile(file) {
+            const form = new FormData();
+            form.append('file', file);
+            const btn = document.querySelector('label div');
+            btn.innerHTML = '<span class="text-sm text-blue-600 font-medium">Uploading...</span>';
+            try {
+                const res = await fetch(`${apiBase}/upload`, { method: 'POST', body: form });
+                if (!res.ok) throw new Error('Upload failed');
+                await loadFiles();
+            } catch (e) {
+                alert('Upload failed: ' + e.message);
+            } finally {
+                btn.innerHTML = `<svg class="mx-auto h-8 w-8 text-slate-400 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg><span class="text-sm text-slate-600 font-medium">Upload CSV or XLSX</span>`;
+            }
+        }
+
+        async function deleteFile(name) {
+            if (!confirm(`Delete ${name}?`)) return;
+            await fetch(`${apiBase}/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            await loadFiles();
+        }
+
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            if (e.target.files[0]) uploadFile(e.target.files[0]);
+            e.target.value = '';
+        });
+
+        // Chat
+        const chatMessages = document.getElementById('chatMessages');
+        const chatForm = document.getElementById('chatForm');
+        const chatInput = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function appendMessage(role, content) {
+            const div = document.createElement('div');
+            div.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            div.innerHTML = `<div class="${role === 'user' ? 'bg-blue-600 text-white rounded-2xl rounded-tr-none' : 'bg-white border border-slate-200 text-slate-700 rounded-2xl rounded-tl-none'} px-4 py-3 max-w-2xl shadow-sm text-sm">${escapeHtml(content).replace(/\\n/g, '<br>')}</div>`;
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return div;
+        }
+
+        function appendArtifact(artifact) {
+            const container = document.createElement('div');
+            container.className = 'flex justify-start artifact-card';
+            if (artifact.type === 'chart') {
+                container.innerHTML = `<div class="bg-white border border-slate-200 rounded-2xl rounded-tl-none p-4 shadow-sm max-w-2xl w-full"><canvas id="chart-${Date.now()}" height="300"></canvas></div>`;
+            } else if (artifact.type === 'table') {
+                const headers = artifact.headers.map(h => `<th class="px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase border-b border-slate-200">${escapeHtml(h)}</th>`).join('');
+                const rows = artifact.rows.slice(0, 50).map(row => `<tr class="hover:bg-slate-50">${artifact.headers.map(h => `<td class="px-3 py-2 text-sm text-slate-700 border-b border-slate-100">${escapeHtml(String(row[h] ?? ''))}</td>`).join('')}</tr>`).join('');
+                container.innerHTML = `<div class="bg-white border border-slate-200 rounded-2xl rounded-tl-none shadow-sm max-w-2xl w-full overflow-x-auto"><table class="min-w-full divide-y divide-slate-200"><thead><tr>${headers}</tr></thead><tbody class="divide-y divide-slate-100">${rows}</tbody></table></div>`;
+            }
+            chatMessages.appendChild(container);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            const canvas = container.querySelector('canvas');
+            if (canvas && artifact.type === 'chart') {
+                new Chart(canvas.getContext('2d'), artifact.spec);
+            }
+        }
+
+        function appendLoading() {
+            const div = document.createElement('div');
+            div.id = 'loadingIndicator';
+            div.className = 'flex justify-start';
+            div.innerHTML = `<div class="bg-white border border-slate-200 rounded-2xl rounded-tl-none px-4 py-3 shadow-sm"><span class="text-sm text-slate-500 loading-dots">Thinking</span></div>`;
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function removeLoading() {
+            const el = document.getElementById('loadingIndicator');
+            if (el) el.remove();
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = chatInput.value.trim();
+            if (!text) return;
+            chatInput.value = '';
+            appendMessage('user', text);
+            appendLoading();
+            sendBtn.disabled = true;
+
+            try {
+                const res = await fetch(`${apiBase}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text }),
+                });
+                const data = await res.json();
+                removeLoading();
+                appendMessage('assistant', data.answer || '');
+                if (data.artifacts) {
+                    data.artifacts.forEach(appendArtifact);
+                }
+            } catch (err) {
+                removeLoading();
+                appendMessage('assistant', 'Error: ' + err.message);
+            } finally {
+                sendBtn.disabled = false;
+                chatInput.focus();
+            }
+        });
+
+        function escapeHtml(str) {
+            if (str == null) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        loadFiles();
+    </script>
+</body>
+</html>
