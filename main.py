@@ -20,14 +20,17 @@ from pathlib import Path
 
 import httpx
 import asyncio
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-
+load_dotenv()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.58.230.33:11434/api/chat")
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 UPLOAD_DIR = Path("uploads")
@@ -35,8 +38,6 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 mcp_session: ClientSession | None = None
 tool_schemas: list[dict] = []
-_mcp_stdio = None
-_mcp_client_session = None
 _mcp_lock = asyncio.Lock()
 
 
@@ -79,49 +80,28 @@ async def _call_mcp_tool(name: str, arguments: dict) -> tuple[str, dict | None]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mcp_session, tool_schemas, _mcp_stdio, _mcp_client_session
+    global mcp_session, tool_schemas
 
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["mcp_server.py"],
-        cwd=Path(".").resolve(),
+        cwd=Path(__file__).parent.resolve(),
     )
 
-    try:
-        _mcp_stdio = stdio_client(server_params)
-        read, write = await _mcp_stdio.__aenter__()
-        _mcp_client_session = ClientSession(read, write)
-        await _mcp_client_session.__aenter__()
-        await _mcp_client_session.initialize()
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-        tools_result = await _mcp_client_session.list_tools()
-        tool_schemas = [mcp_tool_to_ollama_schema(t) for t in tools_result.tools]
-        mcp_session = _mcp_client_session
-        print(f"Connected to MCP server. Tools available: {[t.name for t in tools_result.tools]}")
-    except Exception as e:
-        print(f"Failed to connect to MCP server: {e}")
-        raise
+            tools_result = await session.list_tools()
+            tool_schemas = [mcp_tool_to_ollama_schema(t) for t in tools_result.tools]
+            global mcp_session
+            mcp_session = session
+            print(f"Connected to MCP server. Tools available: {[t.name for t in tools_result.tools]}")
 
-    try:
-        yield
-    finally:
-        mcp_session = None
-        if _mcp_client_session:
             try:
-                await _mcp_client_session.__aexit__(None, None, None)
-            except Exception:
-                pass
+                yield
             finally:
-                _mcp_client_session = None
-        if _mcp_stdio:
-            try:
-                await _mcp_stdio.__aexit__(None, None, None)
-            except RuntimeError:
-                pass
-            except Exception:
-                pass
-            finally:
-                _mcp_stdio = None
+                mcp_session = None
 
 
 app = FastAPI(title="BI Agent", lifespan=lifespan)

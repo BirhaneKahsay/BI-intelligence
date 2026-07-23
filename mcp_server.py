@@ -126,6 +126,139 @@ def run_pandas(dataset: str, expression: str) -> str:
 
 
 @mcp.tool()
+def describe_dataset(table_name:str):
+    """Get summary statistics for a dataset: count, mean, std, min/max, quartiles for
+    numeric columns, and value counts for categorical columns. Good first step for
+    'what's in this data' or 'give me an overview' questions."""
+
+    if table_name not in DATAFRAMES:
+        return f"Error: unknown dataset '{table_name}'. Call list_datasets first."
+    df = DATAFRAMES[table_name]
+    numeric_summary = df.describe(include=[float, int]).to_dict()
+    categorical_summary = {
+        col: df[col].value_counts().head(5).to_dict()
+        for col in df.select_dtypes(include=["object", "category"]).columns
+    }
+    summary = {
+        "dataset": table_name,
+        "row_count": len(df),
+        "column_count": len(df.columns),
+        "numeric_summary": numeric_summary,
+        "categorical_summary": categorical_summary,
+    }
+    return json.dumps(summary, indent=2, default=str)
+
+@mcp.tool()
+def group_agg(table: str, group_by: str, value_col: str, agg: str = "sum") -> str:
+    """Group rows by one column and aggregate another. This is the workhorse for
+    questions like 'total revenue by region' or 'average order size by customer'.
+    agg: 'sum', 'mean', 'count', 'min', 'max', 'median'."""
+
+    if table not in DATAFRAMES:
+        return f"Error: unknown table '{table}'. Call list_columns first."
+    if agg not in {"sum", "mean", "count", "min", "max", "median"}:
+        return "Error: agg must be one of sum, mean, count, min, max, median"
+    df = DATAFRAMES[table]
+    if group_by not in df.columns or value_col not in df.columns:
+        return f"Error: columns must be from {list(df.columns)}"
+    result = getattr(df.groupby(group_by)[value_col], agg)().sort_values(ascending=False)
+    return result.head(100).to_json()
+
+@mcp.tool()
+def top_n(
+    table: str,
+    column: str,
+    n: int = 10,
+    ascending: bool = False,
+    filter_col: str = "",
+    filter_value: str = "",
+) -> str:
+    if table not in DATAFRAMES:
+        return f"Error: unknown table '{table}'."
+
+    df = DATAFRAMES[table].copy()
+
+    if column not in df.columns:
+        return f"Error: column must be one of {list(df.columns)}"
+
+    if n <= 0:
+        return "Error: n must be greater than 0."
+
+    if filter_col:
+        if filter_col not in df.columns:
+            return f"Error: filter_col must be one of {list(df.columns)}"
+
+        df = df[
+            df[filter_col]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            == filter_value.strip().lower()
+        ]
+
+        if df.empty:
+            return "No matching rows found."
+
+    df[column] = pd.to_numeric(df[column], errors="coerce")
+    df = df.dropna(subset=[column])
+
+    result = df.sort_values(column, ascending=ascending).head(n)
+
+    return result.to_json(orient="records")
+
+@mcp.tool()
+def pivot(table: str, index: str, columns: str, values: str, aggfunc: str = "sum") -> str:
+    """Build a pivot table - rows grouped by 'index', spread across 'columns', with
+    'values' aggregated in each cell. Use for cross-tab questions like
+    'revenue by product and by month' or 'orders by region and status'."""
+    if table not in DATAFRAMES:
+        return f"Error: unknown table '{table}'. Call list_columns first."
+    df = DATAFRAMES[table]
+    for c in (index, columns, values):
+        if c not in df.columns:
+            return f"Error: columns must be from {list(df.columns)}"
+    try:
+        result = pd.pivot_table(df, index=index, columns=columns, values=values, aggfunc=aggfunc, fill_value=0)
+        return result.reset_index().to_json(orient="records")
+    except Exception as e:
+        return f"Error: {e}"
+
+@mcp.tool()
+def correlation(table: str, col_a: str, col_b: str = "") -> str:
+    """Compute correlation between two numeric columns, or the full correlation matrix
+    of all numeric columns if col_b is omitted. Use for 'is X related to Y' questions."""
+    if table not in DATAFRAMES:
+        return f"Error: unknown table '{table}'. Call list_columns first."
+    df = DATAFRAMES[table].select_dtypes(include="number")
+    if col_a not in df.columns:
+        return f"Error: col_a must be one of numeric columns {list(df.columns)}"
+    if col_b:
+        if col_b not in df.columns:
+            return f"Error: col_b must be one of numeric columns {list(df.columns)}"
+        return json.dumps({"correlation": df[col_a].corr(df[col_b])})
+    return df.corr().round(3).to_json()
+
+@mcp.tool()
+def trend(table: str, date_col: str, value_col: str, freq: str = "M", agg: str = "sum") -> str:
+    """Resample a dataset over time to show a trend - e.g. monthly revenue, weekly signups.
+    freq: 'D' (daily), 'W' (weekly), 'M' (monthly), 'Q' (quarterly), 'Y' (yearly).
+    agg: 'sum', 'mean', 'count'."""
+    if table not in DATAFRAMES:
+        return f"Error: unknown table '{table}'. Call list_columns first."
+    if agg not in {"sum", "mean", "count"}:
+        return "Error: agg must be sum, mean, or count"
+    df = DATAFRAMES[table]
+    if date_col not in df.columns or value_col not in df.columns:
+        return f"Error: columns must be from {list(df.columns)}"
+    try:
+        dates = pd.to_datetime(df[date_col])
+        series = df.set_index(dates)[value_col]
+        result = getattr(series.resample(freq), agg)()
+        return result.reset_index().to_json(orient="records", date_format="iso")
+    except Exception as e:
+        return f"Error: {e}"
+
+@mcp.tool()
 def generate_chart(
     dataset: str,
     chart_type: str,
